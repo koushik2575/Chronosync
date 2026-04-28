@@ -1,0 +1,166 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Primitives
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isSignedIn() { return request.auth != null; }
+    function isValidId(id) { 
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+    function isAdmin() { 
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'; 
+    }
+    
+    // User Validator
+    function isValidUser(data) {
+      return data.keys().hasAll(['email', 'name', 'role', 'createdAt']) 
+        && data.email is string 
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && data.role is string && (data.role == 'admin' || data.role == 'employee' || data.role == 'user' || data.role == 'manager')
+        && data.createdAt is number
+        && (data.get('hourlyRate', 0) is number);
+    }
+
+    // Project Validator
+    function isValidProject(data) {
+      return data.keys().hasAll(['name', 'description', 'color', 'createdAt', 'ownerId'])
+        && data.keys().size() <= 6
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && data.description is string && data.description.size() <= 500
+        && data.color is string && data.color.size() <= 20
+        && data.createdAt is number
+        && data.ownerId is string && data.ownerId == request.auth.uid
+        && (data.get('assignments', []) is list) && data.get('assignments', []).size() <= 100;
+    }
+
+    // Timesheet Validator
+    function isValidTimesheet(data) {
+      return data.keys().hasAll(['userId', 'projectId', 'taskName', 'startTime', 'endTime', 'durationSecs', 'dateStr', 'createdAt', 'updatedAt'])
+        && data.keys().size() == 9
+        && data.userId is string && data.userId == request.auth.uid
+        && data.projectId is string && data.projectId.size() <= 128
+        && data.taskName is string && data.taskName.size() <= 200
+        && data.startTime is number
+        && data.endTime is number
+        && data.durationSecs is number
+        && data.dateStr is string && data.dateStr.size() == 10
+        && data.createdAt is number
+        && data.updatedAt is number;
+    }
+
+    // Task Validator
+    function isValidTask(data) {
+      return data.keys().hasAll(['title', 'description', 'status', 'priority', 'projectId', 'userId', 'createdAt', 'updatedAt'])
+        && data.keys().size() >= 8 && data.keys().size() <= 11
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 200
+        && data.description is string && data.description.size() <= 2000
+        && data.status is string && (data.status == 'todo' || data.status == 'in-progress' || data.status == 'done')
+        && data.priority is string && (data.priority == 'low' || data.priority == 'medium' || data.priority == 'high')
+        && data.projectId is string && data.projectId.size() <= 128
+        && data.userId is string && data.userId == request.auth.uid
+        && data.createdAt is number
+        && data.updatedAt is number
+        && (!('attachments' in data) || data.attachments is list)
+        && (!('reminderAt' in data) || data.reminderAt == null || data.reminderAt is number)
+        && (!('reminderDismissed' in data) || data.reminderDismissed is bool);
+    }
+
+    // Note Validator
+    function isValidNote(data) {
+      return data.keys().hasAll(['title', 'content', 'projectId', 'userId', 'createdAt', 'updatedAt'])
+        && data.keys().size() >= 6 && data.keys().size() <= 7
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 200
+        && data.content is string && data.content.size() <= 10000
+        && data.projectId is string && data.projectId.size() <= 128
+        && data.userId is string && data.userId == request.auth.uid
+        && data.createdAt is number
+        && data.updatedAt is number
+        && (!('attachments' in data) || data.attachments is list);
+    }
+
+    match /users/{userId} {
+      allow read: if isSignedIn(); // Everyone can see other users for names
+      allow create: if isSignedIn() && isValidId(userId) && userId == request.auth.uid && isValidUser(incoming());
+      allow update: if (isSignedIn() && isValidId(userId) && userId == request.auth.uid && isValidUser(incoming()) 
+                     && incoming().diff(existing()).affectedKeys().hasAny(['name', 'hourlyRate', 'role'])
+                     && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'hourlyRate', 'role'])
+                     && incoming().createdAt == existing().createdAt
+                     && (incoming().role == existing().role || request.auth.token.email == 'koushik2575@gmail.com'))
+                     || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    function isManager() { 
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager'; 
+    }
+
+    match /projects/{projectId} {
+      allow read: if isSignedIn();
+      allow create: if isAdmin() || (isManager() && isValidId(projectId) && isValidProject(incoming()));
+      allow update: if (isManager() && isValidId(projectId) && isValidProject(incoming()) 
+                    && existing().ownerId == request.auth.uid 
+                    && incoming().ownerId == existing().ownerId
+                    && incoming().createdAt == existing().createdAt
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'color', 'assignments'])) 
+                    || isAdmin();
+      allow delete: if (isManager() && isValidId(projectId) && existing().ownerId == request.auth.uid) || isAdmin();
+    }
+
+    match /timesheets/{timesheetId} {
+      // Users can only read their own, Admins can read all
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      
+      allow create: if isSignedIn() && isValidId(timesheetId) 
+                    && isValidTimesheet(incoming()) 
+                    && exists(/databases/$(database)/documents/projects/$(incoming().projectId)); // ensure project exists
+                    
+      allow update: if isSignedIn() && isValidId(timesheetId) && isValidTimesheet(incoming())
+                    && existing().userId == request.auth.uid
+                    && incoming().userId == existing().userId
+                    && incoming().createdAt == existing().createdAt
+                    && exists(/databases/$(database)/documents/projects/$(incoming().projectId))
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['projectId', 'taskName', 'startTime', 'endTime', 'durationSecs', 'dateStr', 'updatedAt'])
+                    || (isAdmin() && exists(/databases/$(database)/documents/projects/$(incoming().projectId)));
+                    
+      allow delete: if isSignedIn() && isValidId(timesheetId) && existing().userId == request.auth.uid 
+                    || isAdmin();
+    }
+
+    match /tasks/{taskId} {
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && isValidId(taskId) && isValidTask(incoming())
+                    && (incoming().projectId == '' || exists(/databases/$(database)/documents/projects/$(incoming().projectId)));
+      allow update: if isSignedIn() && isValidId(taskId) && isValidTask(incoming())
+                    && existing().userId == request.auth.uid
+                    && incoming().userId == existing().userId
+                    && incoming().createdAt == existing().createdAt
+                    && (incoming().projectId == '' || exists(/databases/$(database)/documents/projects/$(incoming().projectId)))
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'status', 'priority', 'projectId', 'updatedAt', 'attachments', 'reminderAt', 'reminderDismissed'])
+                    || (isAdmin() && (incoming().projectId == '' || exists(/databases/$(database)/documents/projects/$(incoming().projectId))));
+      allow delete: if isSignedIn() && isValidId(taskId) && existing().userId == request.auth.uid || isAdmin();
+    }
+
+    match /notes/{noteId} {
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && isValidId(noteId) && isValidNote(incoming())
+                    && (incoming().projectId == '' || exists(/databases/$(database)/documents/projects/$(incoming().projectId)));
+      allow update: if isSignedIn() && isValidId(noteId) && isValidNote(incoming())
+                    && existing().userId == request.auth.uid
+                    && incoming().userId == existing().userId
+                    && incoming().createdAt == existing().createdAt
+                    && (incoming().projectId == '' || exists(/databases/$(database)/documents/projects/$(incoming().projectId)))
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'content', 'projectId', 'updatedAt', 'attachments'])
+                    || (isAdmin() && (incoming().projectId == '' || exists(/databases/$(database)/documents/projects/$(incoming().projectId))));
+      allow delete: if isSignedIn() && isValidId(noteId) && existing().userId == request.auth.uid || isAdmin();
+    }
+  }
+}

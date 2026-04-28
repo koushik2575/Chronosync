@@ -1,0 +1,60 @@
+{
+  "entities": {
+    "user": {
+      "title": "User",
+      "description": "User profile with role-based access control.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "employee"] },
+        "createdAt": { "type": "number", "description": "Timestamp" }
+      },
+      "required": ["email", "name", "role", "createdAt"]
+    },
+    "project": {
+      "title": "Project",
+      "description": "Project categorization for time entries.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "color": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "ownerId": { "type": "string" }
+      },
+      "required": ["name", "color", "createdAt", "ownerId"]
+    },
+    "timesheet": {
+      "title": "Timesheet Entry",
+      "description": "A time log entry.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "projectId": { "type": "string" },
+        "taskName": { "type": "string" },
+        "startTime": { "type": "number", "description": "Timestamp in ms" },
+        "endTime": { "type": "number", "description": "Timestamp in ms" },
+        "durationSecs": { "type": "number" },
+        "dateStr": { "type": "string", "description": "YYYY-MM-DD for fast querying" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["userId", "projectId", "taskName", "startTime", "endTime", "durationSecs", "dateStr", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/user" },
+      "description": "Store user profiles."
+    },
+    "/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/project" },
+      "description": "Store all available projects."
+    },
+    "/timesheets/{timesheetId}": {
+      "schema": { "$ref": "#/entities/timesheet" },
+      "description": "Store employee time entries."
+    }
+  }
+}

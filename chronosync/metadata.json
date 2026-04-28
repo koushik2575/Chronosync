@@ -1,0 +1,6 @@
+{
+  "name": "ChronoSync",
+  "description": "Multi-user timesheet application with role-based access, project categorization, real-time reporting, and PDF export capabilities.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
